@@ -1,0 +1,51 @@
+---
+- name: Desplegar Aplicación Apache en Azure Kubernetes Service (AKS)
+  hosts: localhost # Se ejecuta en la máquina local
+  gather_facts: no
+
+  vars:
+    resource_group: "rg-cp2-demo-s1"
+    cluster_name: "aks-cp2-cluster"
+    manifest_path: "./k8s-deploy.yml" # Ruta al archivo yml de Kubernetes
+
+  tasks:
+    - name: Garantizar librerías de Python para Kubernetes en el entorno local
+      ansible.builtin.pip:
+        name: 
+          - kubernetes
+          - PyYAML
+        state: present
+        extra_args: --user --break-system-packages # Lo instala en el espacio del usuario actual para evitar pedir sudo
+
+    - name: Asegurar que las herramientas de Azure y Kubernetes están instaladas localmente
+      ansible.builtin.command:
+        cmd: "{{ item }}"
+      loop:
+        - "az --version"
+        - "kubectl version --client"
+      changed_when: false
+
+    - name: Descargar las credenciales de conexión del clúster AKS de Azure
+      ansible.builtin.command:
+        cmd: "az aks get-credentials --resource-group {{ resource_group }} --name {{ cluster_name }} --overwrite-existing"
+      changed_when: true
+
+    - name: Aplicar la arquitectura de Apache (PVC, Deployment y Service) en AKS
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ manifest_path }}"
+
+
+    - name: Esperar a que Azure asigne una IP Pública al servicio LoadBalancer
+      kubernetes.core.k8s_info:
+        kind: Service
+        name: apache-service
+        namespace: default
+      register: service_info
+      until: service_info.resources[0].status.loadBalancer.ingress[0].ip is defined
+      retries: 10
+      delay: 15
+
+    - name: Mostrar la URL pública de la aplicación para la entrega
+      ansible.builtin.debug:
+        msg: "¡Despliegue en AKS completado con éxito! Accede a la web en: http://{{ service_info.resources[0].status.loadBalancer.ingress[0].ip }}"

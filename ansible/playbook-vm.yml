@@ -1,0 +1,136 @@
+- name: Configurar Servidor Web Seguro y Persistente en Podman (VM)
+  hosts: azure_vms
+  become: yes
+  vars_files:
+    - acr_vars.yml # <--- Le decimos al playbook que lea las variables desde este archivo externo
+    
+
+  tasks:
+    - name: Actualizar repositorios apt e instalar dependencias
+      apt:
+        name:
+          - podman
+          - openssl
+          - apache2-utils # Necesario para generar el archivo de autenticación básica (htpasswd)
+        state: present
+        update_cache: yes
+
+    - name: Iniciar e habilitar el servicio de Podman
+      systemd:
+        name: podman
+        state: started
+        enabled: yes
+
+    - name: Crear directorios de configuración en la VM para el contenedor
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /etc/nginx-secure
+        - /etc/nginx-secure/certs
+
+    - name: Generar certificado X.509 autofirmado para HTTPS
+      command: >
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048
+        -keyout /etc/nginx-secure/certs/server.key
+        -out /etc/nginx-secure/certs/server.crt
+        -subj "/C=ES/ST=Madrid/L=Madrid/O=UNIR/OU=CP2/CN=unir-practica.local"
+      args:
+        creates: /etc/nginx-secure/certs/server.crt
+    
+    - name: Instalar libreria passlib de Python para el cifrado de claves
+      ansible.builtin.apt:
+        name: python3-passlib
+        state: present
+
+    - name: Generar archivo de autenticacion seguro para Nginx
+      ansible.builtin.shell:
+        cmd: "podman run --rm docker.io/library/alpine sh -c 'apk add --no-cache apache2-utils > /dev/null && htpasswd -nb adminuser Unir2026' > /etc/nginx-secure/.htpasswd"
+
+    - name: Asegurar permisos correctos en el archivo htpasswd
+      ansible.builtin.file:
+        path: /etc/nginx-secure/.htpasswd
+        owner: root
+        group: root
+        mode: '0644'
+
+ 
+    - name: Crear archivo de configuración básico de Nginx para HTTPS y Autenticación
+      copy:
+        dest: /etc/nginx-secure/nginx.conf
+        content: |
+          events { worker_connections 1024; }
+          http {
+              server {
+                  listen 443 ssl;
+                  server_name localhost;
+
+                  ssl_certificate /etc/nginx/certs/server.crt;
+                  ssl_certificate_key /etc/nginx/certs/server.key;
+
+                  auth_basic "Acceso Restringido - Caso Practico 2 UNIR";
+                  auth_basic_user_file /etc/nginx/.htpasswd;
+
+                  location / {
+                      root /usr/share/nginx/html;
+                      index index.html index.htm;
+                  }
+              }
+          }
+
+    - name: Autenticar Podman contra el ACR de Azure
+      containers.podman.podman_login:
+        username: "{{ acr_user }}"
+        password: "{{ acr_pass }}"
+        registry: "{{ acr_server }}"
+
+    - name: Asegurar que la imagen del ACR con el tag correcto esté descargada
+      containers.podman.podman_image:
+        name: "{{ acr_server }}/{{ image_name }}"
+        tag: "{{ image_tag }}"
+        state: present
+  
+    # Paso A: Crear el directorio en la VM de Azure
+    - name: Crear directorio para la web en la VM
+      ansible.builtin.file:
+        path: /var/www/html
+        state: directory
+        mode: '0755'
+
+    # Paso B: Subir tus archivos locales (Ruta Relativa Universal)
+    - name: Copiar los archivos de la web a la VM
+      ansible.builtin.copy:
+        src: mi-app-web/
+        dest: /var/www/html/
+        mode: '0644' 
+
+    # Paso C: Preparar el contenedor con la imagen de Azure
+    - name: Crear la plantilla del contenedor (sin arrancar)
+      containers.podman.podman_container:
+        name: servidor-web-seguro
+        image: "{{ acr_server }}/{{ image_name }}:{{ image_tag }}"
+        restart_policy: always
+        state: created
+        ports:
+          - "443:443"
+        volumes:
+          - /etc/nginx-secure/nginx.conf:/etc/nginx/nginx.conf:Z
+          - /etc/nginx-secure/certs:/etc/nginx/certs:Z
+          - /etc/nginx-secure/.htpasswd:/etc/nginx/.htpasswd:Z
+          - /var/www/html:/usr/share/nginx/html:Z  
+
+    # Paso D: Integracion con el sistema operativo (Systemd)
+    - name: Generar el archivo de servicio Systemd nativo para Podman
+      ansible.builtin.shell:
+        cmd: "podman generate systemd --name servidor-web-seguro --new > /etc/systemd/system/container-servidor-web-seguro.service"
+
+    - name: Recargar Systemd para reconocer el nuevo servicio
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Asegurar que el servicio de la app esté iniciado y habilitado en el arranque
+      ansible.builtin.systemd:
+        name: container-servidor-web-seguro
+        state: started
+        enabled: true

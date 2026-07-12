@@ -1,0 +1,19 @@
+# Ignorar carpetas ocultas y binarios de Terraform
+.terraform/
+*.terraform*
+.terraform.lock.hcl
+
+# Ignorar el estado de la infraestructura (contiene contraseñas en texto plano)
+*.tfstate
+*.tfstate.*
+
+# Ignorar variables secretas locales
+*.tfvars
+*.tfvars.json
+
+# Ignorar claves privadas generadas dinámicamente por seguridad
+**/id_rsa_vm
+
+# Archivos temporales del sistema
+.DS_Store
+*.log

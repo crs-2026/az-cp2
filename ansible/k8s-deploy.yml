@@ -1,0 +1,79 @@
+---
+# ==============================================================================
+#  ALMACENAMIENTO PERSISTENTE (PersistentVolumeClaim)
+# ==============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: apache-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: default # SC nativa de AKS (utiliza Azure Disk Standard SSD)
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+# ==============================================================================
+#  DESPLIEGUE DE LA APLICACIÓN (Deployment)
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apache-app
+  namespace: default
+  labels:
+    app: apache-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: apache-web
+  template:
+    metadata:
+      labels:
+        app: apache-web
+    spec:
+     # CONTENEDOR DE INICIALIZACIÓN: Escribe la web antes de que arranque Apache
+      initContainers:
+        - name: init-sitio-web
+          image: busybox:latest
+          command: ["sh", "-c", "echo '<html><body><h1>¡Despliegue en Azure Kubernetes Service (AKS) Exitoso!</h1><p>Esta es una aplicacion Apache corriendo sobre un cluster gestionado y con almacenamiento persistente.</p></body></html>' > /data/index.html"]
+          volumeMounts:
+            - name: apache-storage
+              mountPath: /data 
+
+
+      containers:
+        - name: apache-container
+          image: acrunircp2jristo.azurecr.io/mi-aplicacion2:k8s-apache
+          ports:
+            - containerPort: 80
+          # Vinculación del almacenamiento persistente en la ruta de Apache
+          volumeMounts:
+            - name: apache-storage
+              mountPath: /usr/local/apache2/htdocs/
+      volumes:
+        - name: apache-storage
+          persistentVolumeClaim:
+            claimName: apache-pvc
+
+---
+# ==============================================================================
+#  ACCESO DESDE INTERNET (Service LoadBalancer)
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: apache-service
+  namespace: default
+spec:
+  type: LoadBalancer #  Azure nos dará una IP pública automáticamente
+  ports:
+    - protocol: TCP
+      port: 80         # Puerto expuesto a Internet
+      targetPort: 80   # Puerto interno del contenedor Apache
+  selector:
+    app: apache-web
